@@ -1,0 +1,11 @@
+name = Bring Lookup
+description = "Lookup a postal code, filling in the result value."
+core = 7.x
+package = Other
+
+files[] = bring_lookup.module
+files[] = js/bring_lookup.js
+
+scripts[] = js/bring_lookup.js
+
+configure = admin/config/user-interface/bring-lookup

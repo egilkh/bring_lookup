@@ -1,0 +1,331 @@
+<?php
+/**
+ * @file
+ * Lookup a postal code, filling in the result value.
+ */
+
+/**
+ * Implaments hook_init().
+ */
+function bring_lookup_init() {
+  if (bring_lookup_enabled()) {
+
+    if (bring_lookup_should_restrict()) {
+      throw new Exception('I did not complete this.');
+    }
+
+    drupal_add_js(
+      array(
+        'bringLookup' => array(
+          'country' => bring_lookup_country(),
+          'triggerLength' => bring_lookup_min_trigger_length(),
+          'enabled' => TRUE,
+          'APIUrl' => bring_lookup_apiurl(),
+          'selectors' => bring_lookup_selectors(),
+        )
+    ), 'setting');
+  }
+}
+/**
+ * Implements hook_menu().
+ */
+function bring_lookup_menu() {
+  $items = array();
+
+  $items['admin/config/user-interface/bring-lookup'] = array(
+    'title' => 'Bring Lookup',
+    'description' => 'Configure where and how the lookup should be.',
+    'access arguments' => array('administer site configuration'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('bring_lookup_settings'),
+  );
+
+  return $items;
+}
+
+/**
+ * Settings form for Bring Lookup.
+ */
+function bring_lookup_settings($form, &$form_state) {
+  $form['bring_lookup_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enabled'),
+    '#description' => t('Enable/disable Bring Lookup. Prevents the Javascript to be executed at all.'),
+    '#default_value' => bring_lookup_enabled(),
+  );
+
+  $form['current_selectors'] = array();
+
+  $i = 1;
+  $selectors = bring_lookup_selectors();
+  foreach ($selectors as $selector) {
+    bring_lookup_create_form_elements_for_selector($selector, $form, $i);
+    $i++;
+  }
+
+  // Add an empty selector to the end.
+  bring_lookup_create_form_elements_for_selector(array(), $form, $i);
+
+  $form['bring_lookup_country'] = array(
+    '#type' => 'select',
+    '#title' => t('Default country'),
+    '#description' => t('The default country to perform lookup on.'),
+    '#options' => bring_lookup_supported_countries(),
+    '#default_value' => bring_lookup_country(),
+    '#required' => TRUE,
+  );
+
+  $form['bring_lookup_min_trigger_length'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Min trigger length'),
+    '#description' => t('Minimum amount of character in an input selector before we do a lookup.'),
+    '#default_value' => bring_lookup_min_trigger_length(),
+    '#required' => TRUE,
+  );
+
+  $form['bring_lookup_restrict'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Restrict'),
+    '#description' => t('Restrict script to only be executed on certain URLs.'),
+    '#default_value' => bring_lookup_should_restrict(),
+  );
+
+  $form['bring_lookup_restrict_urls'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Restrict URLs'),
+    '#description' => t('List of all URLs for script to be executed. <strong>Note:</strong> One line for each URL that you wish to have lookup on.'),
+    '#default_value' => implode(PHP_EOL, bring_lookup_restrict_urls()),
+    '#rows' => 5,
+    '#states' => array(
+      'visible' => array(
+        ':input[name="bring_lookup_restrict"]' => array('checked' => TRUE),
+      ),
+    ),
+  );
+
+  $form['current_selectors'] = array(
+    '#type' => 'value',
+    '#value' => $form['current_selectors'],
+  );
+
+  // There is no magic when it's the system.
+  $form['#submit'][] = 'bring_lookup_settings_submit';
+  return system_settings_form($form);
+}
+
+/**
+ * Implements hook_form_validate.
+ */
+function bring_lookup_settings_validate($form, &$form_state) {
+  $current_selectors = isset($form_state['values']['current_selectors']) ? $form_state['values']['current_selectors'] : array();
+  if (empty($current_selectors)) {
+    form_set_error('', t('No selectors created for lookup.'));
+  }
+
+  $i = 1;
+  foreach ($current_selectors as $selector) {
+    $input_value = $form_state['values'][$selector['input']];
+    $output_value = $form_state['values'][$selector['output']];
+
+    if (empty($input_value) xor empty($output_value)) {
+      if (empty($input_value)) {
+        form_set_error($selector['input'], t('Both input and output should be set for a selector pair.'));
+      }
+      if (empty($output_value)) {
+        form_set_error($selector['output'], t('Both input and output should be set for a selector pair.'));
+      }
+    }
+
+    $i++;
+  }
+
+  $bring_lookup_min_trigger_length = $form_state['values']['bring_lookup_min_trigger_length'];
+  if (!is_numeric($bring_lookup_min_trigger_length) || !is_int((int) $bring_lookup_min_trigger_length)) {
+    form_set_error('bring_lookup_min_trigger_length', t('Minimum trigger length needs to be a integer.'));
+  }
+}
+
+/**
+ * Custom submit handler for saving selectors.
+ */
+function bring_lookup_settings_submit($form, &$form_state) {
+  $current_selectors = $form_state['values']['current_selectors'];
+  $valid_selectors = array();
+
+  $i = 1;
+  foreach ($current_selectors as $selector) {
+    $input_value = $form_state['values'][$selector['input']];
+    $output_value = $form_state['values'][$selector['output']];
+
+    if (empty($input_value) && empty($output_value)) {
+      continue;
+    }
+
+    $valid_selectors[] = array(
+      'input' => $input_value,
+      'output' => $output_value,
+    );
+  }
+  variable_set('bring_lookup_selectors', $valid_selectors);
+
+  $form_state['values']['bring_lookup_min_trigger_length'] = (int) $form_state['values']['bring_lookup_min_trigger_length'];
+}
+
+/**
+ * Creates form elements for an selector.
+ *
+ * @param array $selector
+ *   Selector to create form elements for.
+ * @param array $form
+ *   The form to attach the elements to.
+ * @param int $i
+ *   Sequential number to append each form element.
+ */
+function bring_lookup_create_form_elements_for_selector($selector, &$form, $i) {
+  $form['selector_' . $i] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Selector @i', array('@i' => $i)),
+  );
+  $form['selector_' . $i]['bring_lookup_input_selector_' . $i] = array(
+    '#type' => 'textfield',
+    '#title' => t('Input'),
+    '#default_value' => !empty($selector['input']) ? $selector['input'] : '',
+    '#size' => 128
+  );
+
+  $form['selector_' . $i]['bring_lookup_output_selector_' . $i] = array(
+    '#type' => 'textfield',
+    '#title' => t('Output'),
+    '#default_value' => !empty($selector['output']) ? $selector['output'] : '',
+    '#size' => 128
+  );
+
+  // Keep track of selectors.
+  $form['current_selectors'][] = array(
+    'input' => 'bring_lookup_input_selector_' . $i,
+    'output' => 'bring_lookup_output_selector_' . $i,
+  );
+}
+
+/**
+ * Returns if the module is enabled or disabled.
+ *
+ * @return bool
+ *   TRUE if module is enabled in settings.
+ */
+function bring_lookup_enabled() {
+  return variable_get('bring_lookup_enabled', TRUE);
+}
+
+/**
+ * Returns our selectors.
+ *
+ * @return array
+ *   Current enabled selectors.
+ */
+function bring_lookup_selectors() {
+  return variable_get('bring_lookup_selectors', bring_lookup_selectors_default());
+}
+
+/**
+ * Returns default selectors (Commerce Checkout).
+ */
+function bring_lookup_selectors_default() {
+  return array(
+    1 => array(
+      'input' => 'input[name="customer_profile_shipping[commerce_customer_address][und][0][postal_code]"]',
+      'output' => 'input[name="customer_profile_shipping[commerce_customer_address][und][0][locality]"]',
+    ),
+    2 => array(
+      'input' => 'input[name="customer_profile_billing[commerce_customer_address][und][0][postal_code]"]',
+      'output' => 'input[name="customer_profile_billing[commerce_customer_address][und][0][locality]"]',''
+    )
+  );
+}
+
+/**
+ * Returns an array with the current input selectors.
+ */
+function bring_lookup_input_selectors() {
+  return explode(PHP_EOL, variable_get('bring_lookup_input_selectors', bring_lookup_input_selectors_default()));
+}
+
+/**
+ * Returns an array with the default input selectors.
+ */
+function bring_lookup_input_selectors_default() {
+  return implode(PHP_EOL, array(
+    'input[name="customer_profile_shipping[commerce_customer_address][und][0][postal_code]"]',
+    'input[name="customer_profile_billing[commerce_customer_address][und][0][postal_code]"]',
+  ));
+}
+
+/**
+ * Returns an array with the current output selectors.
+ */
+function bring_lookup_output_selectors() {
+  return explode(PHP_EOL, variable_get('bring_lookup_output_selectors', bring_lookup_output_selectors_default()));
+}
+
+/**
+ * Returns an array with the default output selectors.
+ */
+function bring_lookup_output_selectors_default() {
+  return implode(PHP_EOL, array(
+    'input[name="customer_profile_shipping[commerce_customer_address][und][0][locality]"]',
+    'input[name="customer_profile_billing[commerce_customer_address][und][0][locality]"]',
+  ));
+}
+
+/**
+ * Returns the current selected country to perform lookups for.
+ */
+function bring_lookup_country() {
+  return variable_get('bring_lookup_country', 'NO');
+}
+
+/**
+ * Returns the current minimum trigger length for input fields.
+ */
+function bring_lookup_min_trigger_length() {
+  return variable_get('bring_lookup_min_trigger_length', 4);
+}
+
+/**
+ * Returns a list of supported countries for lookup.
+ */
+function bring_lookup_supported_countries() {
+  return array(
+    'NO' => t('Norway'),
+    'DK' => t('Denmark'),
+    'SE' => t('Sweden'),
+    'FI' => t('Finland'),
+    'NL' => t('Netherlands'),
+    'DE' => t('Germany'),
+    'US' => t('United States'),
+    'BE' => t('Belgium'),
+  );
+}
+
+/**
+ * Returns if we should restrict script to only certain URLs.
+ */
+function bring_lookup_should_restrict() {
+  return variable_get('bring_lookup_restrict', FALSE);
+}
+
+/**
+ * Returns an array with the restricted URLs.
+ */
+function bring_lookup_restrict_urls() {
+  return explode(PHP_EOL, variable_get('bring_lookup_restrict_urls', ''));
+}
+
+/**
+ * Returns the current Bring API endpoint.
+ *
+ * Note: the ?
+ */
+function bring_lookup_apiurl() {
+  return 'https://fraktguide.bring.no/fraktguide/api/postalCode.json?';
+}
