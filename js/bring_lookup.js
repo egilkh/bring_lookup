@@ -9,7 +9,7 @@
           var $input = $(e['input']);
           var $output = $(e['output']);
 
-          $input.keyup(function () {
+          var callback = function () {
             var val = $input.val();
             console.log(val);
             if (val.length >= settings.bringLookup.triggerLength) {
@@ -27,7 +27,9 @@
                 }
               });
             }
-          });
+          };
+
+          $input.keyup(callback).focusout(callback);
         });
       }
     }
