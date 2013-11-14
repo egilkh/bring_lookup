@@ -11,7 +11,6 @@
 
           var callback = function () {
             var val = $input.val();
-            console.log(val);
             if (val.length >= settings.bringLookup.triggerLength) {
               params['pnr'] = val;
               $.ajax({
