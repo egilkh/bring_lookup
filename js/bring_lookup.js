@@ -12,7 +12,7 @@
           var callback = function () {
             var val = $input.val();
             if (val.length >= settings.bringLookup.triggerLength) {
-              params['pnr'] = val;
+              params.pnr = val;
               $.ajax({
                 url: settings.bringLookup.APIUrl + $.param(params),
                 dataType: 'jsonp',
